@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem *)",
+      "Read(//h/Ayon-Dev/**)",
+      "Read(//h/Ayon-Dev/ayon-core/client/ayon_core/pipeline/workfile/**)"
+    ]
+  }
+}

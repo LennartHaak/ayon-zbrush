@@ -49,7 +49,7 @@ class ZbrushAddon(AYONAddon, IHostAddon):
         click_group.add_command(cli_main.to_click_obj())
 
     def get_workfile_extensions(self):
-        return [".zpr"]
+        return [".zpr", ".ztl"]
 
     def get_launch_hook_paths(self, app):
         if app.host_name != self.host_name:

@@ -19,7 +19,7 @@ from ayon_core.pipeline.context_tools import get_global_context
 from ayon_core.settings import get_current_project_settings
 from ayon_core.lib import register_event_callback
 from ayon_zbrush import ZBRUSH_HOST_DIR
-from .lib import execute_zscript, get_workdir
+from .lib import execute_zscript, get_workdir, wait_zscript
 
 ZBRUSH_SECTION_NAME_CONTEXT = "context"
 ZBRUSH_METADATA_CREATE_CONTEXT = "create_context"
@@ -32,6 +32,14 @@ log = logging.getLogger("ayon.hosts.zbrush")
 
 class ZbrushHost(HostBase, IWorkfileHost, ILoadHost, IPublishHost):
     name = "zbrush"
+
+    @staticmethod
+    def _get_workfile_extension(filepath):
+        return os.path.splitext(filepath)[1].lower()
+
+    @classmethod
+    def _is_tool_workfile(cls, filepath):
+        return cls._get_workfile_extension(filepath) == ".ztl"
 
     def install(self):
         # Create workdir folder if does not exist yet
@@ -92,12 +100,16 @@ class ZbrushHost(HostBase, IWorkfileHost, ILoadHost, IPublishHost):
     # --- Workfile ---
     def open_workfile(self, filepath):
         filepath = filepath.replace("\\", "/")
+        load_command = "File:Open:Open"
+        if self._is_tool_workfile(filepath):
+            load_command = "Tool:Load Tool"
         execute_zscript(f"""
 [IFreeze,
     [FileNameSetNext, "{filepath}"]
-    [IKeyPress, 13, [IPress, File:Open:Open]]]
+    [IKeyPress, 13, [IPress, {load_command}]]]
 ]
     """)
+        os.environ["AYON_CURRENT_WORKFILE"] = filepath
         os.environ["AYON_CURRENT_ZPR"] = filepath
         return filepath
 
@@ -105,19 +117,26 @@ class ZbrushHost(HostBase, IWorkfileHost, ILoadHost, IPublishHost):
         if not filepath:
             filepath = self.get_current_workfile()
         filepath = filepath.replace("\\", "/")
+        save_command = "File:SaveAs:SaveAs"
+        if self._is_tool_workfile(filepath):
+            save_command = "Tool:Save As"
         # # move the json data to the files
         # # shutil.copy
         copy_ayon_data(filepath)
+        os.environ["AYON_CURRENT_WORKFILE"] = filepath
         os.environ["AYON_CURRENT_ZPR"] = filepath
         execute_zscript(f"""
 [IFreeze,
     [FileNameSetNext, "{filepath}"]
-    [IKeyPress, 13, [IPress, File:SaveAs:SaveAs]]]
+    [IKeyPress, 13, [IPress, {save_command}]]]
 ]
 """)
         return filepath
 
     def get_current_workfile(self):
+        current_file = os.getenv("AYON_CURRENT_WORKFILE")
+        if current_file:
+            return current_file
         return os.getenv("AYON_CURRENT_ZPR", "")
 
     def workfile_has_unsaved_changes(self):
@@ -126,7 +145,7 @@ class ZbrushHost(HostBase, IWorkfileHost, ILoadHost, IPublishHost):
         return True
 
     def get_workfile_extensions(self):
-        return [".zpr"]
+        return [".zpr", ".ztl"]
 
     def list_instances(self):
         """Get all AYON instances."""
@@ -152,6 +171,24 @@ class ZbrushHost(HostBase, IWorkfileHost, ILoadHost, IPublishHost):
         """
         context = get_global_context()
         save_current_workfile_context(context)
+        last_workfile = os.environ.get("AYON_ZBRUSH_OPEN_LAST_WORKFILE")
+        if not last_workfile or not os.path.exists(last_workfile):
+            return
+        # `application.launched` fires right after Zbrush is spawned (the
+        # communicator does not actually wait for a real client connection),
+        # so Zbrush is still booting and running its startup plugin-load
+        # script. Sending the open zscript now would be lost. Ping Zbrush
+        # until it is responsive before opening. Zbrush reopens the last
+        # .zpr project itself, but a .ztl tool must be loaded explicitly.
+        try:
+            wait_zscript(timeout=120.0)
+        except RuntimeError:
+            log.warning(
+                "Zbrush did not become responsive in time; "
+                "attempting to open last workfile anyway."
+            )
+        log.info(f"Opening last workfile: {last_workfile}")
+        self.open_workfile(last_workfile)
 
     def application_exit(self):
         """Logic related to TimerManager.
